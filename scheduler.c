@@ -75,6 +75,7 @@ void RR_DEMO(int quantum, int K) {
     int running_process_sem_id = -1;
     int isFinished             = 0;
     int isBlocked              = 0;
+    int extend_quantum =0;
 
     // perf accumulators
     int   finished_processes_count = 0;
@@ -105,11 +106,15 @@ void RR_DEMO(int quantum, int K) {
 
         // ── tick the running process ──────────────────────────
         if (running_process_sem_id != -1) {
-            sem_release(running_process_sem_id, 0);
+            if(extend_quantum || quantum_remaining > 1) {
+                printf("S: sem_release for process %d\n", running_PCB->proc->ID);
+                sem_release(running_process_sem_id, 0);
+            }
             remainingForProcess--;
             quantum_remaining--;
 
             if (remainingForProcess == 0) {
+                printf("S: waiting to finish process%d\n", running_PCB->proc->ID);
                 sem_wait(running_process_sem_id, 1);
                 running_PCB->remainingTime = 0;
                 log_event(out, now, "finished", running_PCB, 1);
@@ -142,38 +147,43 @@ void RR_DEMO(int quantum, int K) {
             }
         }
 
-        // ── check for memory request from running process ─────
-        // Wait for the process to signal back (it either finished its
-        // normal tick or has a memory request pending).
+        // ── check for memory request (process signals via sem[1]) ─
+        // Process always releases sem[1] at end of each tick.
+        // If it sent a request this tick, the request is in the queue.
+        // Scheduler translates immediately and queues the response;
+        // process reads it at the TOP of its NEXT tick (waiting_for_response).
         if (running_PCB != NULL && running_process_sem_id != -1) {
+            printf("S: waiting to check request from process%d\n", running_PCB->proc->ID);
             sem_wait(running_process_sem_id, 1);
 
             struct mem_request req;
-            if (msgrcv(mem_req_qid, &req, sizeof(req) - sizeof(long), running_PCB->proc->ID, IPC_NOWAIT) != -1) {
+            if (msgrcv(mem_req_qid, &req, sizeof(req) - sizeof(long),
+                       running_PCB->proc->ID, IPC_NOWAIT) != -1) {
+                printf("S: mem_request P%d VA=0x%x rw=%c — translating now\n",
+                       req.process_id, req.virtual_address, req.rw);
+
+
 
                 int phys = MMU_translate(running_PCB, req.virtual_address, req.rw);
                 if (phys == -1) {
-                    // PAGE FAULT
+                    // PAGE FAULT — block process; response sent when disk done
                     running_PCB->remainingTime = remainingForProcess;
                     log_event(out, now, "stopped", running_PCB, 0);
-
-                    MMU_handle_fault(mem_log, running_PCB, req.virtual_address, req.rw, now);
-
-                    // freeze the process while it waits for disk I/O
-                    kill(running_PCB->proc->PID, SIGSTOP);
-
+                    MMU_handle_fault(mem_log, running_PCB,
+                                     req.virtual_address, req.rw, now);
+                    // kill(running_PCB->proc->PID, SIGSTOP);
                     running_PCB->state = BLOCKED;
                     enqueue_blocked(running_PCB);
-
                     running_PCB            = NULL;
                     running_process_sem_id = -1;
                     isBlocked              = 1;
                     quantum_remaining      = quantum;
                     quantums_elapsed++;
                 } else {
-                    // no fault — send immediate response
+                    // HIT — queue response immediately; process reads next tick
+                    printf("S: RAM hit P%d — response queued\n", req.process_id);
                     struct mem_response res;
-                    res.mtype   = running_PCB->proc->ID;
+                    res.mtype   = req.process_id;
                     res.granted = 1;
                     msgsnd(mem_res_qid, &res, sizeof(res) - sizeof(long), 0);
                 }
@@ -195,14 +205,16 @@ void RR_DEMO(int quantum, int K) {
                     running_PCB->remainingTime -= now - running_PCB->last_start_time;
                     log_event(out, now, "stopped", running_PCB, 0);
                     // freeze: quantum expired, process goes back to ready queue
-                    kill(running_PCB->proc->PID, SIGSTOP);
+                    // kill(running_PCB->proc->PID, SIGSTOP);
                     enqueuePcb(&rr_head, running_PCB);
                     running_PCB            = NULL;
                     running_process_sem_id = -1;
                 }
                 switching = CONTEXT_SWITCH_TIME;
+                extend_quantum = 0;
             } else {
                 quantum_remaining = quantum;
+                extend_quantum = 1;
             }
             isFinished = 0;
             isBlocked  = 0;
@@ -215,7 +227,7 @@ void RR_DEMO(int quantum, int K) {
             MMU_complete_page_load(mem_log, p, now);
 
             // wake the process so it can receive the response message
-            kill(p->proc->PID, SIGCONT);
+            // kill(p->proc->PID, SIGCONT); possible sem_release
 
             struct mem_response res;
             res.mtype   = p->proc->ID;
@@ -271,7 +283,7 @@ void RR_DEMO(int quantum, int K) {
             }
             new_pcb->proc->PID = pid;
             // freeze immediately — child will sleep until first dispatch
-            kill(pid, SIGSTOP);
+            // kill(pid, SIGSTOP);
 
             enqueuePcb(&rr_head, new_pcb);
         }
@@ -301,11 +313,11 @@ void RR_DEMO(int quantum, int K) {
                 // (process was already forked at arrival; just initialise MMU)
                 MMU_process_start(mem_log, current_PCB, now);
                 // unfreeze: first time on CPU
-                kill(current_PCB->proc->PID, SIGCONT);
+                // kill(current_PCB->proc->PID, SIGCONT);
                 log_event(out, now, "started", current_PCB, 0);
             } else {
                 // unfreeze: returning from preemption or page-fault recovery
-                kill(current_PCB->proc->PID, SIGCONT);
+                // kill(current_PCB->proc->PID, SIGCONT);
                 log_event(out, now, "resumed", current_PCB, 0);
             }
 
@@ -314,6 +326,8 @@ void RR_DEMO(int quantum, int K) {
             remainingForProcess            = running_PCB->remainingTime;
             quantum_remaining              = quantum;
             running_process_sem_id = semget(111 + running_PCB->proc->ID, 2, 0666);
+            printf("S: sem_release for process %d\n", running_PCB->proc->ID);
+            sem_release(running_process_sem_id, 0);
         }
     }
 

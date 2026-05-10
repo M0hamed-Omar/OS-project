@@ -44,73 +44,98 @@ int main(int argc, char *argv[])
         fclose(req_file);
     }
 
-    // cpu_ticks_used tracks how many ticks this process has consumed.
-    // It starts at 0 and is incremented every time the scheduler
-    // releases semid[0] — including the 1-tick RAM access cost
-    // (edit 1) and regular execution ticks.
-    int cpu_ticks_used = 0;
-    int req_index      = 0;
+    int cpu_ticks_used       = 0;
+    int req_index            = 0;
+    int waiting_for_response = 0; // set after sending a request; cleared next tick
+    int normal   = 0;
+    int prev_time = -1;
+    int clk_now = -1;
 
-    int now;
-    int prev_time = 0;
-    
     while (1)
     {
-        now = getClk();
-        if (now == prev_time) continue;  // TICK GATE
-        prev_time = now;
-        
-        // wait for scheduler to signal this tick
-        printf("P: waiting\n");
-        fflush(stdout);
+        // wait for scheduler's tick signal
+        printf("P%d: waiting\n", process_id);
         sem_wait(semid, 0);
-        printf("P: awake\n");
-    
-        remainingtime--;
-        int sent = 0;
+        printf("P%d: awake\n", process_id);
         
-        // check BEFORE incrementing: cpu_tick=0 fires on first CPU tick,
-        // cpu_tick=1 fires on second, etc.
-        while (req_index < req_count && requests[req_index].cpu_tick == cpu_ticks_used)
-        {
-            // send memory access request to scheduler
+        // if(normal && getClk() - prev_time > 1) {
+        //     cpu_ticks_used--;
+        //     remainingtime++;
+        // }
+
+        normal = 0;
+
+        int clk_now = getClk();
+        prev_time = clk_now;
+
+        printf("[P%d | clk=%d | cpu_tick=%d | remaining=%d] tick\n",
+               process_id, clk_now, cpu_ticks_used, remainingtime);
+        fflush(stdout);
+
+        // ── STEP 1: receive pending response from last tick ──────
+        if (waiting_for_response) {
+            printf("[P%d | clk=%d] waiting for mem_response...\n",
+                   process_id, clk_now);
+            fflush(stdout);
+
+            struct mem_response res;
+            msgrcv(mem_res_qid, &res, sizeof(res) - sizeof(long), process_id, 0);
+
+            printf("[P%d | clk=%d] <<< response received (granted=%d)\n",
+                   process_id, getClk(), res.granted);
+            fflush(stdout);
+
+            waiting_for_response = 0;
+            req_index++;
+        }
+
+        // ── STEP 2: send new request if one is due this cpu_tick ─
+        int sent = 0;
+
+        if (req_index < req_count && requests[req_index].cpu_tick == cpu_ticks_used) {
             struct mem_request req;
             req.mtype           = process_id;
             req.process_id      = process_id;
             req.virtual_address = requests[req_index].virtual_address;
             req.rw              = requests[req_index].rw;
+
+            printf("[P%d | clk=%d | cpu_tick=%d] >>> sending mem_request VA=0x%x rw=%c\n",
+                   process_id, clk_now, cpu_ticks_used,
+                   req.virtual_address, req.rw);
+            fflush(stdout);
+
             msgsnd(mem_req_qid, &req, sizeof(req) - sizeof(long), 0);
-            sem_release(semid, 1);
+            waiting_for_response = 1;
             sent = 1;
-            printf("P: sent and released\n");
-            // block until scheduler resolves it.
-            // if no fault: scheduler replies immediately (no extra tick).
-            // if fault:    scheduler blocks us, handles disk (10 or 20
-            //              ticks), then sends the reply — those disk ticks
-            //              are NOT counted in cpu_ticks_used because the
-            //              scheduler is not releasing semid[0] while we
-            //              are blocked.
-            struct mem_response res;
-            msgrcv(mem_res_qid, &res, sizeof(res) - sizeof(long), process_id, 0);  // blocking wait
-            
-            req_index++;
         }
 
+        if (!sent) {
+            printf("[P%d | clk=%d | cpu_tick=%d] normal execution\n",
+                   process_id, clk_now, cpu_ticks_used);
+            normal = 1;
+            fflush(stdout);
+        }
+
+        if (sent) {
+            // Only real CPU work ticks decrement remaining time.
+            // A RAM-request send tick is overhead — don't count it.
+            // remainingtime--;
+            // cpu_ticks_used++;
+        }
+        
+        remainingtime--;
         cpu_ticks_used++;
 
-        if(!sent) {
-            sem_release(semid, 1);
-            printf("P: released\n");
-        }
-        
-        
+        // always signal the scheduler that this tick is done
+        sem_release(semid, 1);
+
         if (remainingtime == 0)
             break;
     }
 
     destroyClk(false);
 
-    // notify scheduler we finished (SIGCHLD sent automatically on exit)
+    // notify scheduler we finished
     sem_release(semid, 1);
 
     return 0;

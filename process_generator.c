@@ -19,9 +19,11 @@ int main(int argc, char *argv[])
 {
     signal(SIGINT, clearResources);
 
-    // 1. Read input file (argv[1] or default to "processes.txt")
-    char *filename = (argc > 1) ? argv[1] : "processes.txt";
-
+    // 1. Read input file
+    char filename[256];
+    printf("Enter input file name: ");
+    scanf("%255s", filename);
+    
     FILE *input_file = fopen(filename, "r");
     if (input_file == NULL)
     {
