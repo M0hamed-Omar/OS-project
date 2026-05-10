@@ -49,4 +49,6 @@ void MMU_process_finish(PCB *pcb);
 
 void MMU_reset_r_bits();
 
+void MMU_cleanup();
+
 #endif

@@ -22,23 +22,6 @@
 #define false 0
 
 #define SHKEY 300
-#define MMU_REQ_KEY  222
-#define MMU_RES_KEY  333
-#define MEM_REQ_KEY  444
-#define MEM_RES_KEY  555
-
-// request types
-#define MMU_MSG_START    1
-#define MMU_MSG_ACCESS   2
-#define MMU_MSG_COMPLETE 3
-#define MMU_MSG_FINISH   4
-#define MMU_MSG_RESET_R  5
-#define MMU_MSG_SHUTDOWN 6
-
-// response types
-#define MMU_RES_OK    1
-#define MMU_RES_FAULT 2
-#define MMU_RES_DONE  3
 
 // message to send memory request to scheduler
 struct mem_request {
@@ -52,29 +35,6 @@ struct mem_request {
 struct mem_response {
     long mtype;
     int granted;     // 1 = page is ready, process can continue
-};
-
-
-struct mmu_request {
-    long mtype;
-    int req_type;
-    int pid;
-    int virtual_address;
-    char rw;
-    int base;
-    int limit;
-    int now;
-    int physical_address;  // reused for pending_frame / pt_frame
-};
-
-struct mmu_response {
-    long mtype;
-    int res_type;
-    int physical_address;
-    int disk_ticks;
-    int pending_frame;
-    int pending_vpn;
-    int pt_frame;
 };
 
 typedef short bool;

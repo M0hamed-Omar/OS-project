@@ -61,6 +61,12 @@ int main(int argc, char *argv[])
         prev_time = now;
         
         // wait for scheduler to signal this tick
+        printf("P: waiting\n");
+        fflush(stdout);
+        sem_wait(semid, 0);
+        printf("P: awake\n");
+    
+        remainingtime--;
         int sent = 0;
         
         // check BEFORE incrementing: cpu_tick=0 fires on first CPU tick,
@@ -76,7 +82,7 @@ int main(int argc, char *argv[])
             msgsnd(mem_req_qid, &req, sizeof(req) - sizeof(long), 0);
             sem_release(semid, 1);
             sent = 1;
-            printf("P%d: sent and released\n", process_id);
+            printf("P: sent and released\n");
             // block until scheduler resolves it.
             // if no fault: scheduler replies immediately (no extra tick).
             // if fault:    scheduler blocks us, handles disk (10 or 20
@@ -86,26 +92,17 @@ int main(int argc, char *argv[])
             //              are blocked.
             struct mem_response res;
             msgrcv(mem_res_qid, &res, sizeof(res) - sizeof(long), process_id, 0);  // blocking wait
-            printf("P%d: received response at time %d\n", process_id, getClk());
+            
             req_index++;
-            cpu_ticks_used++;
         }
-        
-        now = getClk();
-        remainingtime--;
-        prev_time = now;
-        
+
+        cpu_ticks_used++;
+
         if(!sent) {
             sem_release(semid, 1);
-            printf("P%d: released\n", process_id);
+            printf("P: released\n");
         }
         
-        printf("P%d: waiting\n", process_id);
-        fflush(stdout);
-        sem_wait(semid, 0);
-        printf("P%d: awake\n", process_id);
-        remainingtime--;
-        cpu_ticks_used++;
         
         if (remainingtime == 0)
             break;

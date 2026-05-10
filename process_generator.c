@@ -7,7 +7,7 @@ void clearResources(int signum)
 {
     if (msgid != -1)
         msgctl(msgid, IPC_RMID, NULL);
-    
+
     if (semid != -1)
         semctl(semid, 0, IPC_RMID);
 
@@ -19,10 +19,8 @@ int main(int argc, char *argv[])
 {
     signal(SIGINT, clearResources);
 
-    // 1. Read input file
-    char filename[256];
-    printf("Enter input file name: ");
-    scanf("%255s", filename);
+    // 1. Read input file (argv[1] or default to "processes.txt")
+    char *filename = (argc > 1) ? argv[1] : "processes.txt";
 
     FILE *input_file = fopen(filename, "r");
     if (input_file == NULL)
@@ -43,7 +41,9 @@ int main(int argc, char *argv[])
         if (line[0] == '\n' || line[0] == '#')
             continue;
 
-        if (sscanf(line, "%d\t%d\t%d\t%d\t%d\t%d", &id, &arrivalTime, &runTime, &priority, &base, &limit) == 6) {
+        if (sscanf(line, "%d\t%d\t%d\t%d\t%d\t%d",
+                   &id, &arrivalTime, &runTime, &priority, &base, &limit) == 6)
+        {
             proc.ID          = id;
             proc.PID         = -1;
             proc.arrivalTime = arrivalTime;
@@ -51,55 +51,25 @@ int main(int argc, char *argv[])
             proc.priority    = priority;
             proc.base        = base;
             proc.limit       = limit;
+
             enqueue(&processes_queue, proc);
         }
-        else {
+        else
+        {
             fprintf(stderr, "Error parsing line: %s\n", line);
             return 1;
         }
     }
     fclose(input_file);
 
-    // 2. Choose algorithm
-    printf("Choose a scheduling algorithm [just enter the number]:\n");
-    printf("1) HPF — Preemptive Highest Priority First\n");
-    printf("2) RR — Round Robin\n");
-    printf("3) FCFS 2-CPU with work stealing\n");
+    // 2. Ask only for quantum and K
+    int quantum, K;
+    printf("Enter quantum: ");
+    scanf("%d", &quantum);
+    printf("Enter K (R-bit reset interval in quantums): ");
+    scanf("%d", &K);
 
-    char choice;
-    scanf(" %c", &choice);
-
-    int quantum = 0, N = 0, M = 0, K = 0;
-
-    int valid_input = 0;
-    while (valid_input == 0)
-    {
-        switch(choice) {
-            case '1':
-            valid_input = 1;
-            break;
-            
-            case '2':
-            valid_input = 1;
-            printf("Enter quantum: ");
-            scanf("%d", &quantum);
-            printf("Enter K (R-bit reset interval in quantums): ");
-            scanf("%d", &K);
-            break;
-            
-            case '3':
-            valid_input = 1;
-            printf("Enter N and M: ");
-            scanf("%d %d", &N, &M);
-            break;
-
-            default:
-            printf("Invalid choice, enter again: ");
-            scanf(" %c", &choice);
-        }
-    }
-
-    // 4. Create message queue
+    // 3. Create IPC resources
     msgid = msgget(111, 0666 | IPC_CREAT);
     semid = create_semaphore(111, 0);
 
@@ -108,7 +78,8 @@ int main(int argc, char *argv[])
         perror("msgget failed");
         exit(1);
     }
-    // 3. Fork clock
+
+    // 4. Fork clock
     pid_t clk_pid = fork();
     if (clk_pid == 0)
     {
@@ -120,52 +91,33 @@ int main(int argc, char *argv[])
     // Init clock
     initClk();
 
-    // Fork scheduler
+    // 5. Fork scheduler (always RR)
     pid_t scheduler_pid = fork();
     if (scheduler_pid == 0)
     {
-        char algo_num[2] = {choice, '\0'};
-        char q_arg[20], k_arg[20], n_arg[20], m_arg[20];
-
-        switch(choice) {
-            case '1':
-            execl("./scheduler.out", "scheduler.out", algo_num, NULL);
-            break;
-            
-            case '2':
-            sprintf(q_arg, "%d", quantum);
-            sprintf(k_arg, "%d", K);
-            execl("./scheduler.out", "scheduler.out", algo_num, q_arg, k_arg, NULL);
-            break;
-            
-            case '3':
-            sprintf(n_arg, "%d", N);
-            sprintf(m_arg, "%d", M);
-            execl("./scheduler.out", "scheduler.out", algo_num, n_arg, m_arg, NULL);
-            break;
-
-            default:
-            perror("Scheduler exec failed");
-            exit(1);
-        }
+        char q_arg[20], k_arg[20];
+        sprintf(q_arg, "%d", quantum);
+        sprintf(k_arg, "%d", K);
+        execl("./scheduler.out", "scheduler.out", q_arg, k_arg, NULL);
+        perror("Scheduler exec failed");
+        exit(1);
     }
 
-    
     struct msbuf message;
     message.mtype = 1;
-    
+
     int now;
     int prev_time = 0;
 
     while (!isQueueEmpty(&processes_queue))
     {
         now = getClk();
-        
+
         // tick gate — only act once per clock tick
         if (now == prev_time) continue;
         prev_time = now;
 
-        // send ALL processes that arrived at or before current_time
+        // send all processes that arrived at or before current time
         while (!isQueueEmpty(&processes_queue))
         {
             Process p;
@@ -190,7 +142,7 @@ int main(int argc, char *argv[])
         sem_release(semid, 0);
     }
 
-    // wait scheduler to finish
+    // wait for scheduler to finish
     waitpid(scheduler_pid, NULL, 0);
 
     clearResources(0);
