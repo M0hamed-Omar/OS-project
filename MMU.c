@@ -4,13 +4,12 @@
 //  GLOBAL STATE (owned exclusively by the MMU)
 // ─────────────────────────────────────────────────────────────
 
-static Frame *frame_table[NUM_FRAMES];        // array of pointers
-static PTE   *page_tables[MAX_PROCESSES];     // each → PTE[MAX_VIRTUAL_PAGES]
+static Frame *frame_table[NUM_FRAMES];
+static PTE   *page_tables[MAX_PROCESSES];
 
 // maps process ID → page_tables row index
 static int   pid_to_pt_index[1024];
 static int   next_pt_index = 0;
-static int   disk_end = 0;
 
 // ─────────────────────────────────────────────────────────────
 //  INTERNAL HELPERS
@@ -49,7 +48,7 @@ static int nru_evict(FILE *mem_log) {
             int old_owner  = frame_table[f]->owner_pid;
             int old_vpn    = frame_table[f]->vpn;
             int old_pt_idx = get_pt_index_by_pid(old_owner);
-
+            
             page_tables[old_pt_idx][old_vpn].valid = 0;
 
             frame_table[f]->pending = 1;
@@ -73,7 +72,6 @@ void MMU_init() {
         frame_table[i]->vpn          = -1;
         frame_table[i]->R            = 0;
         frame_table[i]->M            = 0;
-        frame_table[i]->pending      = 0;
     }
     for (int i = 0; i < MAX_PROCESSES; i++) {
         page_tables[i] = malloc(sizeof(PTE) * MAX_VIRTUAL_PAGES);
@@ -109,7 +107,7 @@ void MMU_process_start(FILE *mem_log, PCB *pcb, int now) {
     // allocate frame for page table
     int pt_frame = find_free_frame();
     if (pt_frame == -1) {
-        pt_frame = nru_evict(mem_log);
+        pt_frame = nru_evict(mem_log); 
         if (frame_table[pt_frame]->M) {
             fprintf(mem_log, "Swapping out page %d to disk\n", pt_frame);
             fflush(mem_log);
@@ -138,7 +136,7 @@ void MMU_process_start(FILE *mem_log, PCB *pcb, int now) {
         }
     }
     else
-       fprintf(mem_log, "Free Physical page %d allocated\n", data_frame);
+       fprintf(mem_log, "Free Physical page %d allocated\n", data_frame); 
 
     int disk_addr = pcb->proc->base + 0;
 
@@ -215,28 +213,29 @@ int MMU_handle_fault(FILE *mem_log, PCB *pcb, int virtual_address, char rw, int 
             disk_ticks += 10;   // write-back + load = 20 ticks
         }
     }
+    
+    int pt_idx = get_pt_index_by_pid(pid);
+    
+    page_tables[pt_idx][vpn].valid = 1;
+    page_tables[pt_idx][vpn].frame = frame;
+    page_tables[pt_idx][vpn].R = 1;
+    page_tables[pt_idx][vpn].M = (rw == 'w') ? 1 : 0;
 
-    // Do NOT mark valid yet — the page is still being loaded from disk.
-    // MMU_complete_page_load will set valid=1 when the disk finishes.
-
-    // clear frame metadata
-    frame_table[frame]->owner_pid     = pid;
-    frame_table[frame]->vpn           = vpn;
-    frame_table[frame]->free          = 0;
+    // // clear frame metadata — caller will repopulate
+    frame_table[frame]->owner_pid = pid;
+    frame_table[frame]->vpn       = vpn;
+    frame_table[frame]->free      = 0; 
     frame_table[frame]->is_page_table = 0;
-    frame_table[frame]->R             = 0;
-    frame_table[frame]->M             = 0;
+    frame_table[frame]->R            = 1;
+    frame_table[frame]->M            = page_tables[pt_idx][vpn].M;
 
     // store pending fault info in PCB for scheduler
     pcb->pending_frame = frame;
     pcb->pending_vpn   = vpn;
     pcb->fault_rw      = rw;
     pcb->disk_ticks    = disk_ticks;
-    //if(now > disk_end)
+    
     pcb->disk_done_at = now + disk_ticks;
-    //else
-    //    pcb->disk_done_at = disk_end + disk_ticks;
-    //disk_end = pcb->disk_done_at;
 
     return disk_ticks;
 }
@@ -250,15 +249,6 @@ void MMU_complete_page_load(FILE *mem_log, PCB *pcb, int now) {
     int disk_addr = pcb->proc->base + vpn;
     int pid       = pcb->proc->ID;
 
-    // update page table entry — page is now resident
-    page_tables[idx][vpn].valid = 1;
-    page_tables[idx][vpn].frame = frame;
-    page_tables[idx][vpn].R     = 1;
-    page_tables[idx][vpn].M     = (pcb->fault_rw == 'w') ? 1 : 0;
-
-    // update frame table bits
-    frame_table[frame]->R = 1;
-    frame_table[frame]->M = page_tables[idx][vpn].M;
     frame_table[frame]->pending = 0;
 
     fprintf(mem_log, "At time %d disk address %d for process %d is loaded into memory page %d.\n", now, disk_addr, pid, frame);
